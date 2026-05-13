@@ -16,10 +16,10 @@ Any USB device that presents as a keyboard (HID) should work.
 
 ## Requirements
 
-Patchbox OS ships with Python 3. Install the two dependencies:
+Patchbox OS ships with Python 3. Install the dependencies using the included `requirements.txt`:
 
 ```bash
-pip install evdev mido python-rtmidi
+pip install -r requirements.txt
 ```
 
 ---
@@ -138,7 +138,7 @@ Press a button to confirm:
 
 ## Run on Boot (Systemd)
 
-To start the bridge automatically when the Pi boots, create a systemd service.
+To start the bridge automatically when the Pi boots, install the included `linemaster-midi.service` file.
 
 Add your user to the `input` group first (required to read `/dev/input/` without sudo):
 
@@ -146,46 +146,31 @@ Add your user to the `input` group first (required to read `/dev/input/` without
 sudo usermod -aG input $USER
 ```
 
-Log out and back in for the group change to take effect, then create the service file:
+Log out and back in for the group change to take effect, then copy the service file into place:
 
 ```bash
-sudo nano /etc/systemd/system/linemaster.service
+sudo cp linemaster-midi.service /etc/systemd/system/
 ```
 
-Paste the following (adjust the path to `linemaster.py` if needed):
-
-```ini
-[Unit]
-Description=USB to MIDI CC Bridge
-After=sound.target
-
-[Service]
-ExecStart=/usr/bin/python3 /home/patch/linemaster.py
-Restart=always
-RestartSec=5
-User=patch
-
-[Install]
-WantedBy=multi-user.target
-```
+If you moved `linemaster.py` somewhere other than `/home/patch/`, update the `ExecStart` path inside the service file before copying it.
 
 Enable and start it:
 
 ```bash
-sudo systemctl enable linemaster
-sudo systemctl start linemaster
+sudo systemctl enable linemaster-midi
+sudo systemctl start linemaster-midi
 ```
 
 Check it's running:
 
 ```bash
-sudo systemctl status linemaster
+sudo systemctl status linemaster-midi
 ```
 
 View live log output:
 
 ```bash
-journalctl -u linemaster -f
+journalctl -u linemaster-midi -f
 ```
 
 ---
