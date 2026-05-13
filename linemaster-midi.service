@@ -1,12 +1,39 @@
+# =============================================================================
+#  Systemd service file for the USB to MIDI CC Bridge
+#
+#  INSTALL:
+#    sudo cp linemaster-midi.service /etc/systemd/system/
+#    sudo systemctl enable linemaster-midi    # start on every boot
+#    sudo systemctl start linemaster-midi     # start right now
+#
+#  USEFUL COMMANDS:
+#    sudo systemctl status linemaster-midi    # check if it's running
+#    sudo systemctl stop linemaster-midi      # stop it
+#    sudo systemctl restart linemaster-midi   # restart it
+#    journalctl -u linemaster-midi -f         # watch live log output
+#
+#  IF YOU MOVE OR RENAME THE SCRIPT:
+#    Update ExecStart below, then run:
+#    sudo systemctl daemon-reload
+# =============================================================================
+
 [Unit]
+# Label shown in systemctl status and journalctl
 Description=USB to MIDI CC Bridge
+# Wait for the sound system to be ready before starting,
+# so MODEP has time to initialize and the MIDI port is available
 After=sound.target
 
 [Service]
+# The command to run — update this path if you move the script
 ExecStart=/usr/bin/python3 /home/patch/linemaster_midi.py
+# Automatically restart if the script crashes for any reason
 Restart=always
+# Wait 5 seconds before restarting, to avoid a rapid crash loop
 RestartSec=5
+# Run as the standard Patchbox OS user, not root
 User=patch
 
 [Install]
+# Start this service when the Pi boots into normal operating mode
 WantedBy=multi-user.target
