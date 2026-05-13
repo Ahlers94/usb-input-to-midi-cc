@@ -1,0 +1,12 @@
+[Unit]
+Description=USB to MIDI CC Bridge
+After=sound.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/patch/linemaster_midi.py
+Restart=always
+RestartSec=5
+User=patch
+
+[Install]
+WantedBy=multi-user.target
