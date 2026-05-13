@@ -2,20 +2,34 @@ import evdev
 import mido
 import time
 import sys
+import threading
+import queue
 
 mido.set_backend('mido.backends.rtmidi')
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEVICE_PATH   = '/dev/input/by-id/usb-fff0_0003-event-kbd'
-MIDI_PORT     = 'Midi Through:Midi Through Port-0 14:0'
-MIDI_CHANNEL  = 0
+MIDI_PORT       = 'Midi Through:Midi Through Port-0 14:0'
+MIDI_CHANNEL    = 0
 RECONNECT_DELAY = 2  # seconds between reconnect attempts
 
-# Key code → MIDI CC number
-KEYMAP = {
-    98: 20,
-    55: 21,
-    74: 22,
+DEVICES = {
+    'footswitch': {
+        'path': '/dev/input/by-id/usb-fff0_0003-event-kbd',
+        'keymap': {
+            98: 20,
+            55: 21,
+            74: 22,
+        },
+    },
+    'keypad': {
+        'path': '/dev/input/by-id/YOUR-KEYPAD-DEVICE-ID',  # ← update this
+        'keymap': {
+            # Add your keypad key codes and desired CC numbers here, e.g.:
+            # 79: 30,
+            # 80: 31,
+            # 81: 32,
+        },
+    },
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -31,80 +45,105 @@ def open_midi_output():
             time.sleep(RECONNECT_DELAY)
 
 
-def open_device():
-    """Open the USB foot switch, retrying until it appears."""
+def open_device(name, path):
+    """Open a USB input device, retrying until it appears."""
     while True:
         try:
-            dev = evdev.InputDevice(DEVICE_PATH)
-            print(f"[USB  ] Connected to: {dev.name}")
+            dev = evdev.InputDevice(path)
+            print(f"[USB  ] {name} connected: {dev.name}")
             return dev
         except (FileNotFoundError, OSError) as e:
-            print(f"[USB  ] Waiting for Linemaster device — {e}")
+            print(f"[USB  ] Waiting for {name} — {e}")
             time.sleep(RECONNECT_DELAY)
 
 
+def device_reader(name, path, keymap, event_queue, stop_event):
+    """
+    Runs in its own thread. Reads events from one device and puts
+    (name, code, cc) tuples onto the shared queue for the main loop.
+    Reconnects automatically if the device disappears.
+    """
+    device = open_device(name, path)
+
+    while not stop_event.is_set():
+        try:
+            for event in device.read_loop():
+                if stop_event.is_set():
+                    break
+                if event.type != evdev.ecodes.EV_KEY:
+                    continue
+                if event.value != 1:          # key-down only
+                    continue
+                cc = keymap.get(event.code)
+                if cc is not None:
+                    event_queue.put((name, event.code, cc))
+
+        except (OSError, IOError) as e:
+            print(f"\n[USB  ] {name} disconnected — {e}")
+            if not stop_event.is_set():
+                print(f"[USB  ] Reconnecting {name} in {RECONNECT_DELAY}s …")
+                time.sleep(RECONNECT_DELAY)
+                device = open_device(name, path)
+
+
 def send_cc(output, channel, control, value):
-    """Send a MIDI CC message, catching send errors."""
-    try:
-        output.send(mido.Message(
-            'control_change',
-            channel=channel,
-            control=control,
-            value=value,
-        ))
-    except Exception as e:
-        print(f"[MIDI ] Send error — {e}")
-        raise  # let the caller handle reconnection
+    """Send a MIDI CC message."""
+    output.send(mido.Message(
+        'control_change',
+        channel=channel,
+        control=control,
+        value=value,
+    ))
 
 
 def main():
     print("═" * 48)
-    print("  Linemaster → MIDI bridge  (Ctrl-C to quit)")
+    print("  Linemaster + Keypad → MIDI bridge")
+    print("  (Ctrl-C to quit)")
     print("═" * 48)
 
-    # Pedal toggle state — False = off (0), True = on (127)
-    pedal_states = {cc: False for cc in KEYMAP.values()}
+    # Collect all CC numbers across all devices for state tracking
+    all_ccs = {cc for dev in DEVICES.values() for cc in dev['keymap'].values()}
+    pedal_states = {cc: False for cc in all_ccs}
 
-    midi_out = open_midi_output()
-    device   = open_device()
+    midi_out    = open_midi_output()
+    event_queue = queue.Queue()
+    stop_event  = threading.Event()
 
+    # Start one reader thread per device
+    for name, cfg in DEVICES.items():
+        t = threading.Thread(
+            target=device_reader,
+            args=(name, cfg['path'], cfg['keymap'], event_queue, stop_event),
+            daemon=True,
+            name=f"reader-{name}",
+        )
+        t.start()
+
+    # Main loop — process events from the shared queue
     while True:
         try:
-            for event in device.read_loop():
-                if event.type != evdev.ecodes.EV_KEY:
-                    continue
-                if event.value != 1:          # 1 = key-down only
-                    continue
+            try:
+                name, code, cc = event_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-                cc = KEYMAP.get(event.code)
-                if cc is None:
-                    continue
+            pedal_states[cc] = not pedal_states[cc]
+            midi_val = 127 if pedal_states[cc] else 0
 
-                # Toggle
-                pedal_states[cc] = not pedal_states[cc]
-                midi_val = 127 if pedal_states[cc] else 0
-
-                print(f"[PEDAL] code={event.code}  CC {cc} → {midi_val}")
-                send_cc(midi_out, MIDI_CHANNEL, cc, midi_val)
-
-        except (OSError, IOError) as e:
-            # USB device lost (unplugged, kernel reset, etc.)
-            print(f"\n[USB  ] Device disconnected — {e}")
-            print(f"[USB  ] Reconnecting in {RECONNECT_DELAY}s …")
-            time.sleep(RECONNECT_DELAY)
-            device = open_device()
+            print(f"[{name:<11}] code={code}  CC {cc} → {midi_val}")
+            send_cc(midi_out, MIDI_CHANNEL, cc, midi_val)
 
         except Exception as e:
-            # MIDI port gone or unexpected error — reconnect everything
-            print(f"\n[ERR  ] Unexpected error — {e}")
-            print(f"[ERR  ] Reopening MIDI and device …")
+            # MIDI port lost — reopen and keep going
+            print(f"\n[ERR  ] MIDI error — {e}")
+            print(f"[ERR  ] Reopening MIDI port …")
             try:
                 midi_out.close()
             except Exception:
                 pass
             time.sleep(RECONNECT_DELAY)
             midi_out = open_midi_output()
-            device   = open_device()
 
 
 if __name__ == '__main__':
