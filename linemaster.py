@@ -1,40 +1,115 @@
 import evdev
 import mido
 import time
+import sys
 
 mido.set_backend('mido.backends.rtmidi')
 
-# 1. Setup states
+# ── Config ────────────────────────────────────────────────────────────────────
+DEVICE_PATH   = '/dev/input/by-id/usb-fff0_0003-event-kbd'
+MIDI_PORT     = 'Midi Through:Midi Through Port-0 14:0'
+MIDI_CHANNEL  = 0
+RECONNECT_DELAY = 2  # seconds between reconnect attempts
 
-pedal_states = {20: False, 21: False, 22: False}
+# Key code → MIDI CC number
+KEYMAP = {
+    98: 20,
+    55: 21,
+    74: 22,
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
-def get_device():
-    path = '/dev/input/by-id/usb-fff0_0003-event-kbd'
+def open_midi_output():
+    """Open MIDI output, retrying until it succeeds."""
     while True:
         try:
-            return evdev.InputDevice(path)
-        except (FileNotFoundError, OSError):
-            print("Waiting for Linemaster USB device...")
-            time.sleep(2)
+            port = mido.open_output(MIDI_PORT)
+            print(f"[MIDI ] Connected to: {MIDI_PORT}")
+            return port
+        except Exception as e:
+            print(f"[MIDI ] Waiting for MIDI port — {e}")
+            time.sleep(RECONNECT_DELAY)
 
-device = get_device()
 
-# CHANGE: Open the system's 'Midi Through' port instead of a virtual one
-# This uses the built-in ALSA through-port (usually 14:0)
-output = mido.open_output('Midi Through:Midi Through Port-0 14:0')
+def open_device():
+    """Open the USB foot switch, retrying until it appears."""
+    while True:
+        try:
+            dev = evdev.InputDevice(DEVICE_PATH)
+            print(f"[USB  ] Connected to: {dev.name}")
+            return dev
+        except (FileNotFoundError, OSError) as e:
+            print(f"[USB  ] Waiting for Linemaster device — {e}")
+            time.sleep(RECONNECT_DELAY)
 
-print(f"--- Connected to {device.name} ---")
-print("Sending MIDI to: Midi Through Port-0")
 
-for event in device.read_loop():
-    if event.type == evdev.ecodes.EV_KEY and event.value == 1:
-        cc = None
-        if event.code == 98:   cc = 20
-        elif event.code == 55: cc = 21
-        elif event.code == 74: cc = 22
+def send_cc(output, channel, control, value):
+    """Send a MIDI CC message, catching send errors."""
+    try:
+        output.send(mido.Message(
+            'control_change',
+            channel=channel,
+            control=control,
+            value=value,
+        ))
+    except Exception as e:
+        print(f"[MIDI ] Send error — {e}")
+        raise  # let the caller handle reconnection
 
-        if cc is not None:
-            pedal_states[cc] = not pedal_states[cc]
-            midi_val = 127 if pedal_states[cc] else 0
-            print(f"Stomp CC {cc} -> {midi_val}")
-            output.send(mido.Message('control_change', channel=0, control=cc, value=midi_val))
+
+def main():
+    print("═" * 48)
+    print("  Linemaster → MIDI bridge  (Ctrl-C to quit)")
+    print("═" * 48)
+
+    # Pedal toggle state — False = off (0), True = on (127)
+    pedal_states = {cc: False for cc in KEYMAP.values()}
+
+    midi_out = open_midi_output()
+    device   = open_device()
+
+    while True:
+        try:
+            for event in device.read_loop():
+                if event.type != evdev.ecodes.EV_KEY:
+                    continue
+                if event.value != 1:          # 1 = key-down only
+                    continue
+
+                cc = KEYMAP.get(event.code)
+                if cc is None:
+                    continue
+
+                # Toggle
+                pedal_states[cc] = not pedal_states[cc]
+                midi_val = 127 if pedal_states[cc] else 0
+
+                print(f"[PEDAL] code={event.code}  CC {cc} → {midi_val}")
+                send_cc(midi_out, MIDI_CHANNEL, cc, midi_val)
+
+        except (OSError, IOError) as e:
+            # USB device lost (unplugged, kernel reset, etc.)
+            print(f"\n[USB  ] Device disconnected — {e}")
+            print(f"[USB  ] Reconnecting in {RECONNECT_DELAY}s …")
+            time.sleep(RECONNECT_DELAY)
+            device = open_device()
+
+        except Exception as e:
+            # MIDI port gone or unexpected error — reconnect everything
+            print(f"\n[ERR  ] Unexpected error — {e}")
+            print(f"[ERR  ] Reopening MIDI and device …")
+            try:
+                midi_out.close()
+            except Exception:
+                pass
+            time.sleep(RECONNECT_DELAY)
+            midi_out = open_midi_output()
+            device   = open_device()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[INFO ] Stopped.")
+        sys.exit(0)
