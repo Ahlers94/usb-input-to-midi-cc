@@ -26,7 +26,7 @@ After=sound.target
 
 [Service]
 # The command to run — update this path if you move the script
-ExecStart=/usr/bin/python3 /home/patch/linemaster_midi.py
+ExecStart=/usr/bin/python3 /home/patch/linemaster.py
 # Automatically restart if the script crashes for any reason
 Restart=always
 # Wait 5 seconds before restarting, to avoid a rapid crash loop
