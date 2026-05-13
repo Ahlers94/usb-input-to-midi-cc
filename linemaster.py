@@ -22,7 +22,7 @@
 #
 #    4. Set MIDI_CHANNEL to match your MODEP plugin bindings (0 = channel 1).
 #
-#    5. Run:  python3 linemaster_midi.py
+#    5. Run:  python3 linemaster.py
 # =============================================================================
 
 import evdev
